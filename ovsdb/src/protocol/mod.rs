@@ -6,6 +6,8 @@ mod request;
 pub use request::*;
 mod response;
 pub use response::*;
+mod monitor;
+pub use monitor::*;
 
 mod map;
 pub use map::*;

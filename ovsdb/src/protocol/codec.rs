@@ -79,8 +79,14 @@ impl Codec {
                                         String::from_utf8(self.data.clone())
                                             .expect("utf8 conversion")
                                     );
-                                    let msg: Message = serde_json::from_slice(&self.data.to_vec())
-                                        .map_err(CodecError::Decode)?;
+                                    let msg: Message = match serde_json::from_slice(&self.data.to_vec()) {
+                                        Ok(m) => {m},
+                                        Err(e) => {
+                                            eprintln!("{}",e);
+                                            return Err(CodecError::Decode(e));
+                                        }
+                                    };
+
                                     self.data.clear();
                                     return Ok((Some(msg), offset));
                                 }

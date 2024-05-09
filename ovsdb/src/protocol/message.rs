@@ -1,11 +1,12 @@
 use std::convert::From;
 
-use super::{Request, Response};
 use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
-    ser::Serializer,
-    Deserialize, Serialize,
+    Deserialize,
+    ser::Serializer, Serialize,
 };
+
+use super::{Request, Response, Update};
 
 /// A single wire-protocol message exchanged between OVSDB client and server.
 #[derive(Debug)]
@@ -14,6 +15,8 @@ pub enum Message {
     Request(Request),
     /// A single response message.
     Response(Response),
+    /// multi respone message.
+    Update(Update)
 }
 
 impl From<Request> for Message {
@@ -36,6 +39,7 @@ impl Serialize for Message {
         match self {
             Self::Response(r) => r.serialize(serializer),
             Self::Request(r) => r.serialize(serializer),
+            Self::Update(r) => r.serialize(serializer),
         }
     }
 }
@@ -66,11 +70,29 @@ impl<'de> Deserialize<'de> for Message {
                 }
 
                 match target.get("method") {
-                    Some(_) => {
-                        let req: super::Request =
-                            serde_json::from_value(serde_json::Value::Object(target))
-                                .map_err(de::Error::custom)?;
-                        Ok(Message::Request(req))
+
+                    Some(v) => {
+                        match v.as_str() {
+                            None => {
+                                let req: super::Request =
+                                    serde_json::from_value(serde_json::Value::Object(target))
+                                        .map_err(de::Error::custom)?;
+                                Ok(Message::Request(req))
+                            }
+                            Some("update") => {
+                                let req: super::Update =
+                                    serde_json::from_value(serde_json::Value::Object(target))
+                                        .map_err(de::Error::custom)?;
+                                Ok(Message::Update(req))
+                            }
+                            _ => {
+                                let req: super::Request =
+                                    serde_json::from_value(serde_json::Value::Object(target))
+                                        .map_err(de::Error::custom)?;
+                                Ok(Message::Request(req))
+                            }
+                        }
+
                         // Ok(res)
                     }
                     None => {

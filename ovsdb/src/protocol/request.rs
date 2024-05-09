@@ -1,10 +1,10 @@
 use serde::{
     de::{self, Deserializer, MapAccess, Visitor},
-    ser::SerializeMap,
-    Deserialize, Serialize, Serializer,
+    Deserialize,
+    ser::SerializeMap, Serialize, Serializer,
 };
 
-use crate::protocol::method::{EchoParams, GetSchemaParams, TransactParams};
+use crate::protocol::method::{EchoParams, GetSchemaParams, MonitorParams, TransactParams, MonitorCancel};
 
 use super::{
     method::{Method, Params},
@@ -25,6 +25,13 @@ impl Request {
     pub fn new(method: Method, params: Option<Box<dyn Params>>) -> Self {
         Self {
             id: Some(super::Uuid::from(uuid::Uuid::new_v4())),
+            method,
+            params,
+        }
+    }
+    pub fn from_id(id: Option<super::Uuid>, method: Method, params: Option<Box<dyn Params>>) -> Self {
+        Self {
+            id,
             method,
             params,
         }
@@ -89,11 +96,16 @@ impl<'de> Deserialize<'de> for Request {
                 while let Some((k, v)) = map.next_entry::<String, serde_json::Value>()? {
                     match k.as_str() {
                         "id" => {
-                            let u = ::uuid::Uuid::parse_str(&k).map_err(de::Error::custom)?;
-                            id = Some(Uuid::from(u));
+                            if let Some(ar) = v.as_array() {
+                                let u = ::uuid::Uuid::parse_str(ar[1].as_str().unwrap()).map_err(de::Error::custom)?;
+                                id = Some(Uuid::from(u));
+                            }else {
+                                id = None;
+                            }
+
                         }
                         "method" => {
-                            let m = Method::try_from(k).map_err(de::Error::custom)?;
+                            let m = Method::try_from(v.as_str().unwrap().to_string()).map_err(de::Error::custom)?;
                             method = Some(m);
                         }
                         "params" => params = Some(v),
@@ -124,6 +136,21 @@ impl<'de> Deserialize<'de> for Request {
                                 let v = params.ok_or("params").map_err(de::Error::missing_field)?;
                                 let p: TransactParams =
                                     serde_json::from_value(v).map_err(de::Error::custom)?;
+                                Some(Box::new(p))
+                            }
+                            Method::Monitor => {
+                                let v = params.ok_or("params").map_err(de::Error::missing_field)?;
+                                let p: MonitorParams = serde_json::from_value(v).map_err(de::Error::custom)?;
+                                Some(Box::new(p))
+                            }
+                            Method::Update => {
+                                let v = params.ok_or("params").map_err(de::Error::missing_field)?;
+                                let p: MonitorParams = serde_json::from_value(v).map_err(de::Error::custom)?;
+                                Some(Box::new(p))
+                            }
+                            Method::MonitorCancel => {
+                                let v = params.ok_or("params").map_err(de::Error::missing_field)?;
+                                let p: MonitorCancel = serde_json::from_value(v).map_err(de::Error::custom)?;
                                 Some(Box::new(p))
                             }
                         };

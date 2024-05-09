@@ -13,7 +13,7 @@ pub enum Operation {
         table: String,
         /// A collection of clauses to act as filters against the table data.
         #[serde(rename = "where")]
-        clauses: Vec<String>,
+        clauses: Vec<Vec<String>>,
     },
 }
 
