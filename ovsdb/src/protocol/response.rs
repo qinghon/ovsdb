@@ -52,3 +52,15 @@ impl<T> ListResult<T> {
         &self.rows
     }
 }
+
+/// OvsDB response trait
+pub trait ResponseResult {
+    /// muti response for request need implement
+    fn result_value(&self) -> Result<Option<Value>>;
+}
+
+impl ResponseResult for Response {
+    fn result_value(&self) -> Result<Option<Value>> {
+        Ok(self.result.clone())
+    }
+}

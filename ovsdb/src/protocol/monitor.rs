@@ -1,16 +1,10 @@
-use serde::{
-    de::{Deserializer, MapAccess, Visitor},
-    Deserialize,
-    ser::SerializeMap, Serialize, Serializer,
-};
+use serde::{Deserialize, Serialize, };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{Error::ParseError, Result};
 
-use super::{
-    method::{Method, Params},
-};
+use super::{method::Method, ResponseResult};
 
 /// Wire-format representation of an OVSDB method call.
 #[derive(Debug, Deserialize, Serialize)]
@@ -29,6 +23,20 @@ impl Update {
     {
         let v:T = serde_json::from_value(self.params[1].clone()).map_err(ParseError)?;
         Ok(Some(v))
+    }
+    /// return monitor uuid
+    pub fn id(&self) -> Option<super::Uuid> {
+        let monid: super::Uuid = match serde_json::from_value(self.params[0].clone()) {
+            Ok(id) => id,
+            Err(_) => {return None}
+        };
+        Some(monid)
+    }
+}
+
+impl ResponseResult for Update {
+    fn result_value(&self) -> Result<Option<Value>> {
+        Ok(Some(self.params[1].clone()))
     }
 }
 

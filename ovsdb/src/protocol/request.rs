@@ -29,6 +29,7 @@ impl Request {
             params,
         }
     }
+    /// create from uuid, some request need save uuid
     pub fn from_id(id: Option<super::Uuid>, method: Method, params: Option<Box<dyn Params>>) -> Self {
         Self {
             id,

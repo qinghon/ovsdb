@@ -1,7 +1,6 @@
 //! TCP/Unix socket based OVSDB client.
 use std::collections::HashMap;
 use std::path::Path;
-use tokio::sync::mpsc::{Sender, Receiver};
 
 use futures::{SinkExt, stream::StreamExt};
 use serde::de::DeserializeOwned;
@@ -18,10 +17,10 @@ use tokio_util::codec::Framed;
 
 use crate::protocol::{method::{
     EchoParams, EchoResult, GetSchemaParams, ListDbsResult, Method, Operation, TransactParams,
-}, Request, Update};
+}, Request, ResponseResult, Uuid};
 use crate::protocol::method::{MonitorCancel, MonitorParams};
 
-use super::{protocol, schema::Schema};
+use super::{Error, protocol, schema::Schema};
 
 /// Internal synchronization failure
 #[derive(Debug)]
@@ -82,7 +81,7 @@ pub enum ClientError {
 #[derive(Debug)]
 enum TxSender {
     One(oneshot::Sender<protocol::Response>),
-    Mut(mpsc::Sender<protocol::Update>),
+    Mut(mpsc::Sender<Box<dyn ResponseResult + Send>>),
 }
 
 #[derive(Debug)]
@@ -95,11 +94,11 @@ struct ClientRequest {
 enum ClientCommand {
     Shutdown,
 }
-
+/// ovsdb monitor context helper
 #[derive(Debug)]
 pub struct Waiter {
-    rx: Receiver<protocol::Update>,
-    tx: Sender<protocol::Update>,
+    rx: mpsc::Receiver<Box<dyn ResponseResult + Send>>,
+    tx: mpsc::Sender<Box<dyn ResponseResult + Send>>,
     request_sender: mpsc::Sender<ClientRequest>,
     id: protocol::Uuid
 }
@@ -232,7 +231,7 @@ impl Client {
 
         self.handle.await?
     }
-
+    /// check client is stoped
     pub fn stoped(&self) -> bool {
         self.handle.is_finished()
     }
@@ -290,7 +289,7 @@ impl Client {
             None => Err(ClientError::NotRunning),
         }
     }
-
+    /// send need waiting request, and return `Waiter`
     pub async fn wait(&self, request: Request) -> Result<Waiter, ClientError>
     {
         let (tx,rx) = mpsc::channel(16);
@@ -429,13 +428,59 @@ impl Client {
             None => Err(ClientError::UnexpectedResult),
         }
     }
-
+    /// Start Monitor Session
+    /// # Example
+    /// ```rust
+    /// use std::collections::HashMap;
+    /// use std::path::Path;
+    /// use serde_json::Value;
+    /// use ovsdb::Client;
+    /// use ovsdb::protocol::Uuid;
+    /// use ovsdb::protocol::method::{MonitorParams, MonitorRequest, Operation};
+    /// # tokio_test::block_on(async {
+    /// let client = Client::connect_unix(Path::new("/var/run/openvswitch/db.sock"))
+    ///     .await
+    ///     .unwrap();
+    /// let op = Operation::Select { table: "Bridges".into(), clauses: vec![] };
+    /// let req = MonitorRequest { columns: vec!["type"].iter_mut().map(|x|x.to_string()).collect() };
+    /// let monid = Uuid::default();
+    /// let params = MonitorParams::new("Open_vSwitch", Some(serde_json::to_value(monid.clone()).unwrap()), HashMap::from([("Interface".to_string(), req)]));
+    /// let mut waiter = client.monitor(params, monid).await?;
+    /// let mut cnt = 0;
+    /// loop {
+    /// 	match waiter.recv::<Value>() {
+    ///    		Ok(rep) => {
+    /// 			match rep {
+    ///    				None => {println!("connect closed!"); return;}
+    ///    				Some(v) => { println!("recv {:?}", v)}
+    ///  			}
+    /// 			cnt += 1;
+    /// 			if cnt > 3 {
+    /// 				waiter.close().await;
+    /// 			}
+    /// 		}
+    /// 		Err(e) => {
+    /// 			if waiter.closed() {
+    ///    				return;
+    ///        		}
+    /// 			eprintln!("cannot parse to value {:?}", e);
+    /// 		}
+    ///     }
+    /// }
+    ///
+    ///
+    /// # });
+    ///
+    ///
+    /// ```
     pub async fn monitor(
         &self,
         params: MonitorParams,
+        monid: Uuid
     ) -> Result<Waiter, ClientError>
     {
-        self.wait(crate::protocol::Request::new(
+        self.wait(crate::protocol::Request::from_id(
+            	Some(monid),
                 Method::Monitor,
                 Some(Box::new(params)),
             )
@@ -453,33 +498,21 @@ where
 {
     let (mut writer, mut reader) = Framed::new(stream, protocol::Codec::new()).split();
     let mut channels: HashMap<protocol::Uuid, TxSender> = HashMap::new();
-    let mut monitor_cannels: HashMap<String, TxSender> = HashMap::new();
 
-    /// ovsdb only one monitor
-    let mut cur_waitsender = None;
     loop {
         tokio::select! {
             Some(req) = requests.recv() => {
                 let request:Request = req.request;
                 if let Some(id) = request.id() {
-                    match req.tx {
-                        TxSender::Mut(tx) => {
-                            cur_waitsender = Some(tx);
-                        },
-                        TxSender::One(tx) => {
-                            channels.insert(*id, TxSender::One(tx));
-                        }
-                    }
-
+                    channels.insert(id.clone(), req.tx);
                 }
-
-                // writer.send(request.into()).await?;
                 writer.send(request.into()).await?;
             },
             Some(cmd) = commands.recv() => {
                 match cmd {
                     ClientCommand::Shutdown => {
                         writer.close().await?;
+                        return Ok(());
                         // todo!()
                         // writer.
                         // writer.shutdown().await?;
@@ -499,11 +532,16 @@ where
                             if let Some(tx) = chan.get(&id) {
                                 match tx {
                                     TxSender::One(_) => {
-                                        if let TxSender::One(mut sender) = chan.remove(&id).unwrap() {
+                                        if let TxSender::One(sender) = chan.remove(&id).unwrap() {
                                             let _ = sender.send(res);
                                         }
                                     }
-                                    _ => {}
+                                    TxSender::Mut(sender) => {
+                                        match sender.send(Box::new(res)).await {
+                                            Ok(_) => {},
+                                            Err(_) => { chan.remove(&id) ; }
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -514,12 +552,20 @@ where
                         todo!();
                     },
                     Ok(protocol::Message::Update(update)) => {
-                        if let Some(ref mut sender) = cur_waitsender {
-                                match sender.send(update).await {
-                                    Ok(_) => {}
-                                    Err(_) => {}
+                        if let Some(id) = update.id() {
+                            let chan = &mut channels;
+                            if let Some(tx) = chan.get(&id) {
+                                match tx {
+                                    TxSender::Mut(sender) => {
+                                        match sender.send(Box::new(update)).await {
+                                            Ok(_) => {},
+                                            Err(_) => { chan.remove(&id) ; }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
+                        }
                     }
                     Err(e) => {eprintln!("{}", e)}
                 }
@@ -535,14 +581,17 @@ where
 
 
 impl Waiter {
-    pub fn new(rx: Receiver<Update>, tx: Sender<Update>, request_sender: mpsc::Sender<ClientRequest>, id: protocol::Uuid)-> Self {
+    /// create from Client.wait
+    fn new(rx: mpsc::Receiver<Box<dyn ResponseResult + Send>>, tx: mpsc::Sender<Box<dyn ResponseResult + Send>>, request_sender: mpsc::Sender<ClientRequest>, id: protocol::Uuid) -> Self {
     	Self {
             rx,
             tx,
             request_sender,
             id,
         }
+
     }
+    /// recv response from waiter, if client closed, recv `None` result
     pub async fn recv<T>(&mut self) -> Result<Option<T>, ClientError>
         where
             T: DeserializeOwned,
@@ -551,20 +600,37 @@ impl Waiter {
         match rep {
             None =>  Ok(None),
             Some(res) => {
-                let r:Option<T> = res.result()?;
-                Ok(r)
+                let v = res.result_value() ?;
+                match v {
+                    None => {
+                        Err(ClientError::UnexpectedResult)
+                    }
+                    Some(v) => {
+                        let r:Option<T> = serde_json::from_value(v).map_err(Error::ParseError)?;
+                        Ok(r)
+                    }
+                }
+
             }
         }
     }
+    /// send close request and waiting done
     pub async fn close(&mut self) {
+        let monid = Box::new(MonitorCancel::new(serde_json::to_value(self.id).unwrap()));
         let _ = self.request_sender.send(
             ClientRequest {
                 tx: TxSender::Mut(self.tx.clone()),
                 request: Request::from_id(Some(self.id),
                                           Method::MonitorCancel,
-                                          Some(Box::new(MonitorCancel::new("monid_test".to_string())))
+                                          Some(monid)
                 )
             }
         ).await;
+        _ = self.rx.recv().await;
+        self.rx.close()
+    }
+    /// check waiter closed on client process main loop
+    pub fn closed(&self) -> bool {
+        self.rx.is_closed()
     }
 }

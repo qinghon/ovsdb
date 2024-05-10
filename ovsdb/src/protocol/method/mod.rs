@@ -31,10 +31,13 @@ pub enum Method {
     #[serde(rename = "transact")]
     Transact,
     // Cancel,
+    /// OVSDB `monitor` method
     #[serde(rename = "monitor")]
     Monitor,
+    /// OVSDB `monitor` method response method
     #[serde(rename = "update")]
     Update,
+    /// OVSDB `monitor_cancel` method for `monitor`
     #[serde(rename = "monitor_cancel")]
     MonitorCancel,
     // Lock,

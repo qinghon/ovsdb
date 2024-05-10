@@ -16,9 +16,10 @@ pub struct   MonitorRequest {
 #[derive(Debug, Deserialize)]
 pub struct MonitorParams {
     database: String,
-    monid: Option<String>,
-    request: HashMap<String,MonitorRequest>,
+    monid: Option<Value>,
+    request: HashMap<String, MonitorRequest>,
 }
+/// monitor update response
 #[derive(Debug, Deserialize)]
 pub struct MonitorUpdate {
     cond: Option<String>,
@@ -31,13 +32,15 @@ impl MonitorParams {
     /// # Examples
     ///
     /// ```rust
+    /// use std::collections::HashMap;
     /// use ovsdb::protocol::Map;
-    /// use ovsdb::protocol::method::{Operation, MonitorParams};
+    /// use ovsdb::protocol::method::{Operation, MonitorParams, MonitorRequest};
     ///
     /// let op = Operation::Select { table: "Bridges".into(), clauses: vec![] };
-    /// let params = MonitorParams::new("Bridges", None, );
+    /// let req = MonitorRequest { columns: vec!["type"].iter_mut().map(|x|x.to_string()).collect() };
+    /// let params = MonitorParams::new("Open_vSwitch", None, HashMap::from([("Interface".to_string(), req)]));
     /// ```
-    pub fn new<T>(database: T, monid: Option<String>, request: HashMap<String, MonitorRequest>) -> Self
+    pub fn new<T>(database: T, monid: Option<Value>, request: HashMap<String, MonitorRequest>) -> Self
     where
         T: Into<String>,
     {
@@ -78,16 +81,17 @@ impl Serialize for MonitorUpdate {
     }
 }
 
-
+/// ovsdb monitor cancel request params
 #[derive(Debug, Deserialize)]
 pub struct MonitorCancel {
-    monid: String,
+    monid: Value,
 }
 
 impl Params for MonitorCancel {}
 
 impl MonitorCancel {
-    pub fn new(monid: String) -> Self {
+    /// ovsdb monitor cancel create helper
+    pub fn new(monid: Value) -> Self {
         Self {
             monid,
         }
